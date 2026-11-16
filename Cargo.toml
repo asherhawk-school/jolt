@@ -1,0 +1,23 @@
+[package]
+name = "jolt"
+version = "0.1.0"
+edition = "2021"
+description = "A tiny, very fast compiler for a subset of Java that emits real JVM .class files"
+license = "MIT"
+repository = "https://github.com/asherhawk-school/jolt"
+readme = "README.md"
+keywords = ["java", "compiler", "jvm", "bytecode"]
+categories = ["compilers", "command-line-utilities"]
+
+[[bin]]
+name = "jolt"
+path = "src/main.rs"
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
