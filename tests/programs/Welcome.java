@@ -3,23 +3,23 @@
 // then run by a tiny JVM, both written in Rust and compiled to WebAssembly.
 // Edit anything: errors appear as you type. Press Run (Ctrl/Cmd + Enter).
 
-interface Shape {
+interface Figure {
     double area();
     String name();
 }
 
-class Circle implements Shape {
+class Disk implements Figure {
     private final double r;
-    Circle(double r) { this.r = r; }
+    Disk(double r) { this.r = r; }
     public double area() { return Math.PI * r * r; }
-    public String name() { return "circle"; }
+    public String name() { return "disk"; }
 }
 
-class Square implements Shape {
+class Tile implements Figure {
     private final double side;
-    Square(double side) { this.side = side; }
+    Tile(double side) { this.side = side; }
     public double area() { return side * side; }
-    public String name() { return "square"; }
+    public String name() { return "tile"; }
 }
 
 public class Welcome {
@@ -52,11 +52,11 @@ public class Welcome {
         }
         System.out.println();
 
-        Shape[] shapes = { new Circle(1.5), new Square(2), new Circle(0.5) };
+        Figure[] figures = { new Disk(1.5), new Tile(2), new Disk(0.5) };
         double total = 0;
-        for (Shape s : shapes) {
-            System.out.printf("  %-7s area = %6.3f%n", s.name(), s.area());
-            total += s.area();
+        for (Figure f : figures) {
+            System.out.printf("  %-5s area = %6.3f%n", f.name(), f.area());
+            total += f.area();
         }
         System.out.printf("Total area: %.2f%n", total);
 

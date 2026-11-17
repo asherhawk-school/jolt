@@ -21,13 +21,15 @@ def timeit(cmd, runs):
     times = []
     for _ in range(runs):
         t = time.perf_counter()
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(cmd, check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         times.append(time.perf_counter() - t)
     return statistics.median(times)
 
 
 def run_java(cp, main):
-    return subprocess.run(["java", "-cp", cp, main], capture_output=True, text=True).stdout
+    stdin_file = os.path.join(ROOT, "tests", "programs", main + ".in")
+    with open(stdin_file if os.path.exists(stdin_file) else os.devnull) as stdin:
+        return subprocess.run(["java", "-cp", cp, main], stdin=stdin, capture_output=True, text=True).stdout
 
 
 def fmt(s):
