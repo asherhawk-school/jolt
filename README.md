@@ -6,6 +6,14 @@ jolt is a from-scratch compiler for a practical subset of Java, written in Rust 
 dependencies. It turns `.java` source into real JVM `.class` files that run on any
 modern Java runtime, and it does so **25–100× faster than `javac`**.
 
+### ▶ [Try it in your browser](https://asherhawk-school.github.io/jolt/)
+
+The [playground](https://asherhawk-school.github.io/jolt/) compiles and runs Java
+entirely on your device, with no server involved. The jolt compiler and **jolt-vm**, a
+tiny JVM written for this project, are both compiled to WebAssembly. You get errors
+as you type, live program output, a `javap`-style bytecode view, stdin for `Scanner`
+programs, and shareable links.
+
 ```console
 $ jolt run Hello.java
 Hello, world!
@@ -49,6 +57,27 @@ while Java's own source launcher (`java Algorithms.java`) takes about 520 ms.
 > of its time is JVM startup. jolt is fast partly *because* it does less (see
 > [What's supported](#whats-supported)). For programs inside its subset, though, the
 > output is the same and you get it 25–100× sooner.
+
+## In the browser: jolt-vm
+
+Browsers don't ship a JVM, so the playground brings its own. `web/` contains
+**jolt-vm**, an interpreter for exactly the bytecode jolt emits. Every JDK method
+jolt knows about is implemented natively, including `String`, `StringBuilder`,
+`Math`, `Arrays`, `Scanner`, `Random` (bit-for-bit Java's algorithm), `String.format`/`printf`
+(with Java's HALF_UP rounding), `Double.toString` (Java's digit rules), regex-based
+`split`/`replaceAll`/`matches`, exceptions with real stack traces, and class initialization
+order. The test suite checks that jolt-vm's output is **identical to the real JVM's**
+for every test program, both natively and in the WebAssembly build.
+
+| | |
+|---|---|
+| WebAssembly module | ~970 KB, no wasm-bindgen, no JS dependencies |
+| Compile in the browser | about 1–2 ms for typical programs |
+| Interpreter speed | about 50–85 million bytecode instructions per second |
+
+Build it yourself with `web/build.sh` (needs `rustup target add wasm32-unknown-unknown`),
+then serve `web/site/` with any static file server. You can also run programs on
+jolt-vm natively: `cargo run --release -p jolt-web --bin jolt-vm -- Hello.java`.
 
 ## Install
 
@@ -144,12 +173,15 @@ jolt tells you clearly when you hit one of these, rather than miscompiling.
 
 Testing is differential: [`tests/run.sh`](tests/run.sh) compiles every program in
 [`tests/programs`](tests/programs) with both jolt and javac, runs both on the JVM, and
-requires identical output. [`tests/errors`](tests/errors) checks that invalid programs
-are rejected with the right diagnostic. The benchmark also cross-checks a generated
+requires identical output. It then runs each program on jolt-vm and requires the same
+output again. [`web/test/wasm.sh`](web/test/wasm.sh) repeats that check for the
+WebAssembly build, and [`tests/errors`](tests/errors) checks that invalid programs are
+rejected with the right diagnostic. The benchmark also cross-checks a generated
 half-million-line project.
 
 ```sh
 tests/run.sh       # or: cargo test
+web/test/wasm.sh   # needs node and the wasm32 target
 ```
 
 ## Project layout
@@ -164,7 +196,11 @@ tests/run.sh       # or: cargo test
 | `src/codegen.rs` | Typed IR → JVM bytecode |
 | `src/classfile.rs` | Constant pool and class-file writer |
 | `src/alloc.rs`, `src/fxhash.rs` | Performance plumbing |
-| `src/main.rs` | CLI driver and parallel scheduling |
+| `src/lib.rs`, `src/main.rs` | Library API, CLI driver and parallel scheduling |
+| `web/src/vm.rs` | jolt-vm: class loader and bytecode interpreter |
+| `web/src/natives.rs` | jolt-vm's implementation of the JDK classes |
+| `web/src/jfmt.rs`, `web/src/regex.rs` | Java-exact number formatting, a small regex engine |
+| `web/src/wasm.rs`, `web/site/` | WebAssembly bindings and the playground page |
 
 ## License
 

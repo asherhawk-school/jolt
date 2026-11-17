@@ -18,9 +18,15 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - name: Build
-        run: cargo build --release
-      - name: Differential tests against javac
+        run: cargo build --release --workspace
+      - name: Unit tests
+        run: cargo test --release --workspace --lib
+      - name: Differential tests (javac, real JVM, jolt-vm)
         run: tests/run.sh
+      - name: WebAssembly build matches the JVM
+        run: web/build.sh && web/test/wasm.sh
       - name: Benchmark (quick)
         run: python3 bench/bench.py --quick

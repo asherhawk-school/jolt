@@ -9,11 +9,17 @@ readme = "README.md"
 keywords = ["java", "compiler", "jvm", "bytecode"]
 categories = ["compilers", "command-line-utilities"]
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "jolt"
 path = "src/main.rs"
 
 [dependencies]
+
+[workspace]
+members = [".", "web"]
 
 [profile.release]
 opt-level = 3

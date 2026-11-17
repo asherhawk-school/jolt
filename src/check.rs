@@ -391,21 +391,20 @@ impl<'a> Checker<'a> {
         if e.ty.is_primitive() && self.method_conv(&e.ty, to, true) {
             return Ok(self.box_value(e));
         }
-        if e.ty.is_primitive() && to.is_reference() {
-            return self.err(
-                pos,
-                format!(
-                    "incompatible types: {} cannot be converted to {} (boxing is only supported to Object)",
-                    e.ty, to
-                ),
-            );
-        }
+        let is_wrapper = |t: &Type| {
+            matches!(t, Type::Class(c) if matches!(&**c,
+                "java/lang/Integer" | "java/lang/Long" | "java/lang/Double" | "java/lang/Character" | "java/lang/Boolean"))
+        };
+        let note = if e.ty.is_primitive() && is_wrapper(to) {
+            " (boxing is only supported to Object)"
+        } else if is_wrapper(&e.ty) && to.is_primitive() {
+            " (unboxing is not supported)"
+        } else {
+            ""
+        };
         self.err(
             pos,
-            format!(
-                "incompatible types: {} cannot be converted to {} (unboxing is not supported)",
-                e.ty, to
-            ),
+            format!("incompatible types: {} cannot be converted to {}{}", e.ty, to, note),
         )
     }
 

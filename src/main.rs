@@ -1,27 +1,13 @@
 //! jolt: a tiny, very fast compiler for a subset of Java.
 
-mod alloc;
-mod ast;
-mod check;
-mod classes;
-mod classfile;
-mod codegen;
-mod declare;
-mod diag;
-mod fxhash;
-mod lexer;
-mod parser;
-mod tir;
-mod types;
-
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
-use diag::Diag;
+use jolt::{Diag, Source};
 
 #[global_allocator]
-static GLOBAL: alloc::JoltAlloc = alloc::JoltAlloc;
+static GLOBAL: jolt::alloc::JoltAlloc = jolt::alloc::JoltAlloc;
 
 const USAGE: &str = "\
 jolt - a very fast compiler for a subset of Java
@@ -36,39 +22,6 @@ OPTIONS:
     -h, --help   show this help
     -V, --version
 ";
-
-/// Inputs bigger than this are processed on all cores.
-const PARALLEL_THRESHOLD_BYTES: usize = 256 * 1024;
-
-fn par_map<T: Sync, R: Send>(items: &[T], parallel: bool, f: impl Fn(&T) -> R + Sync) -> Vec<R> {
-    if !parallel || items.len() < 2 {
-        return items.iter().map(f).collect();
-    }
-    let n = threads().min(items.len());
-    let chunk = items.len().div_ceil(n);
-    let f = &f;
-    std::thread::scope(|s| {
-        let handles: Vec<_> = items
-            .chunks(chunk)
-            .map(|c| s.spawn(move || c.iter().map(f).collect::<Vec<R>>()))
-            .collect();
-        handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
-    })
-}
-
-/// Worker threads: all cores by default, or `JOLT_THREADS=n`.
-fn threads() -> usize {
-    std::env::var("JOLT_THREADS")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4))
-}
-
-struct Source {
-    path: String,
-    text: String,
-}
 
 struct Timer {
     on: bool,
@@ -96,15 +49,7 @@ impl Timer {
 }
 
 fn report(diags: &mut [Diag], sources: &[Source]) {
-    diags.sort_by_key(|d| (d.file, d.pos.line, d.pos.col));
-    let mut out = String::new();
-    for d in diags.iter().take(100) {
-        let s = &sources[d.file];
-        out.push_str(&diag::render(d, &s.path, &s.text));
-    }
-    let n = diags.len();
-    out.push_str(&format!("{} error{}\n", n, if n == 1 { "" } else { "s" }));
-    eprint!("{}", out);
+    eprint!("{}", jolt::render_diags(diags, sources));
 }
 
 /// Compile sources into `out_dir`. Returns the main class (if any) on success.
@@ -132,62 +77,21 @@ fn compile(paths: &[String], out_dir: &Path, time: bool) -> Result<Option<String
         }
     }
     let total_bytes: usize = sources.iter().map(|s| s.text.len()).sum();
-    let parallel = total_bytes >= PARALLEL_THRESHOLD_BYTES && threads() > 1;
+    let parallel = total_bytes >= jolt::PARALLEL_THRESHOLD_BYTES && jolt::threads() > 1;
     timer.lap("read");
 
-    let indexed: Vec<(usize, &Source)> = sources.iter().enumerate().collect();
-    let parsed = par_map(&indexed, parallel, |(i, s)| {
-        lexer::lex(&s.text, *i).and_then(|toks| parser::parse(&toks, *i))
-    });
-    let mut diags = Vec::new();
-    let mut units = Vec::new();
-    for r in parsed {
-        match r {
-            Ok(u) => units.push(u),
-            Err(d) => diags.push(d),
+    let program = match jolt::check(&sources, parallel, true, &mut |p| timer.lap(p)) {
+        Ok(p) => p,
+        Err(mut diags) => {
+            report(&mut diags, &sources);
+            return Err(());
         }
-    }
-    if !diags.is_empty() {
-        report(&mut diags, &sources);
-        return Err(());
-    }
-    timer.lap("lex + parse");
-
-    let mut table = classes::ClassTable::with_jdk();
-    let mut diags = declare::declare(&units, &mut table);
-    if !diags.is_empty() {
-        report(&mut diags, &sources);
-        return Err(());
-    }
-    check::compute_constants(&units, &mut table);
-    timer.lap("declare");
-
-    let decls = declare::walk(&units);
-    // Type-check everything first so that nothing is written if there are errors.
-    let checked = par_map(&decls, parallel, |(d, name, file)| {
-        let sf = Path::new(&sources[*file].path)
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        check::check_class(&table, d, name, *file, &sf).map(|tc| (tc, *file, d.pos))
-    });
-    let mut classes = Vec::with_capacity(checked.len());
-    for r in checked {
-        match r {
-            Ok(c) => classes.push(c),
-            Err(mut ds) => diags.append(&mut ds),
-        }
-    }
-    if !diags.is_empty() {
-        report(&mut diags, &sources);
-        return Err(());
-    }
-    timer.lap("check");
+    };
 
     // Create output directories once, then generate + write class files in parallel.
     let mut dirs: Vec<PathBuf> = Vec::new();
-    for (tc, _, _) in &classes {
-        let dir = match tc.name.rsplit_once('/') {
+    for c in &program.classes {
+        let dir = match c.class.name.rsplit_once('/') {
             Some((pkg, _)) => out_dir.join(pkg),
             None => out_dir.to_path_buf(),
         };
@@ -199,42 +103,20 @@ fn compile(paths: &[String], out_dir: &Path, time: bool) -> Result<Option<String
             dirs.push(dir);
         }
     }
-    let written = par_map(&classes, parallel, |(tc, file, pos)| {
-        let bytes = codegen::gen_class(tc).map_err(|msg| Diag {
-            file: *file,
-            pos: *pos,
-            msg,
-        })?;
-        let path = out_dir.join(format!("{}.class", tc.name));
-        std::fs::write(&path, &bytes).map_err(|e| Diag {
-            file: *file,
-            pos: *pos,
-            msg: format!("cannot write {}: {}", path.display(), e),
-        })
+    let written = program.generate(parallel, &|name, bytes| {
+        let path = out_dir.join(format!("{}.class", name));
+        std::fs::write(&path, bytes).map_err(|e| format!("cannot write {}: {}", path.display(), e))
     });
-    let mut diags: Vec<Diag> = written.into_iter().filter_map(|r| r.err()).collect();
-    if !diags.is_empty() {
+    if let Err(mut diags) = written {
         report(&mut diags, &sources);
         return Err(());
     }
     timer.lap("codegen + write");
     timer.total();
 
-    // Find a main class: the first class with `static void main(String[])`.
-    let main_ty = types::Type::array_of(types::Type::string());
-    let main = decls.iter().find_map(|(_, name, _)| {
-        let ci = table.get(name)?;
-        ci.methods
-            .iter()
-            .any(|m| m.name == "main" && m.is_static && m.params == [main_ty.clone()] && m.ret == types::Type::Void)
-            .then(|| name.replace('/', "."))
-    });
-
+    let main = program.main_class.clone();
     // The process is about to exit: skip running destructors for the big trees.
-    std::mem::forget(decls);
-    std::mem::forget(classes);
-    std::mem::forget(units);
-    std::mem::forget(table);
+    std::mem::forget(program);
     std::mem::forget(sources);
     Ok(main)
 }

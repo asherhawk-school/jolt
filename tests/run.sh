@@ -4,7 +4,8 @@
 set -u
 cd "$(dirname "$0")/.."
 JOLT=${JOLT:-target/release/jolt}
-[ -x "$JOLT" ] || cargo build --release --quiet
+JOLT_VM=${JOLT_VM:-target/release/jolt-vm}
+[ -x "$JOLT" ] && [ -x "$JOLT_VM" ] || cargo build --release --workspace --quiet
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 pass=0; fail=0
@@ -17,12 +18,21 @@ for src in tests/programs/*.java; do
   if ! "$JOLT" -d "$work/$name/jolt" "$src" 2>"$work/$name/jolt.err"; then
     echo "FAIL $name (jolt compile error)"; cat "$work/$name/jolt.err"; fail=$((fail+1)); continue
   fi
-  java -Xshare:auto -cp "$work/$name/javac" "$name" >"$work/$name/expected" 2>&1 </dev/null
-  java -Xshare:auto -cp "$work/$name/jolt" "$name" >"$work/$name/actual" 2>&1 </dev/null
+  input=/dev/null
+  [ -f "tests/programs/$name.in" ] && input="tests/programs/$name.in"
+  java -Xshare:auto -cp "$work/$name/javac" "$name" >"$work/$name/expected" 2>&1 <"$input"
+  java -Xshare:auto -cp "$work/$name/jolt" "$name" >"$work/$name/actual" 2>&1 <"$input"
   if diff -u "$work/$name/expected" "$work/$name/actual" >"$work/$name/diff"; then
     echo "ok   $name"; pass=$((pass+1))
   else
     echo "FAIL $name (output differs)"; head -40 "$work/$name/diff"; fail=$((fail+1))
+  fi
+  # The browser JVM (jolt-vm) must produce the same output as the real JVM.
+  "$JOLT_VM" "$src" >"$work/$name/vm" 2>&1 <"$input"
+  if diff -u "$work/$name/expected" "$work/$name/vm" >"$work/$name/vmdiff"; then
+    echo "ok   vm/$name"; pass=$((pass+1))
+  else
+    echo "FAIL vm/$name (jolt-vm output differs from the JVM)"; head -40 "$work/$name/vmdiff"; fail=$((fail+1))
   fi
 done
 # Programs that must be rejected with a specific diagnostic.

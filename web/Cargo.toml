@@ -1,0 +1,17 @@
+[package]
+name = "jolt-web"
+version = "0.1.0"
+edition = "2021"
+description = "jolt in the browser: the compiler plus a tiny JVM, compiled to WebAssembly"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "jolt-vm"
+path = "src/bin/jolt-vm.rs"
+
+[dependencies]
+jolt = { path = ".." }

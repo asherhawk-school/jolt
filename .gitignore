@@ -2,3 +2,6 @@
 /out
 *.class
 /bench/gen
+/web/site/jolt.wasm
+/web/site/examples.js
+/.claude

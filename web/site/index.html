@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>jolt playground</title>
+  <meta name="description" content="Compile and run Java right in your browser. jolt is a Java compiler plus a tiny JVM, written in Rust and compiled to WebAssembly.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%9A%A1%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="./" aria-label="jolt playground home">
+      <span class="bolt" aria-hidden="true">⚡</span><span class="name">jolt</span><span class="tag">playground</span>
+    </a>
+    <p class="pitch">Java compiled to real JVM bytecode and run <strong>entirely in your browser</strong>, by a compiler and a tiny JVM written in Rust and shipped as WebAssembly.</p>
+    <nav class="actions">
+      <label class="select-wrap">
+        <span class="sr-only">Load an example</span>
+        <select id="examples"></select>
+      </label>
+      <button id="share" class="btn ghost" type="button">Share</button>
+      <a class="btn ghost" href="https://github.com/asherhawk-school/jolt" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </header>
+
+  <main class="layout">
+    <section class="pane editor-pane" aria-label="Editor">
+      <div class="pane-head">
+        <span class="file" id="filename">Main.java</span>
+        <span class="check" id="check" aria-live="polite"></span>
+        <span class="spacer"></span>
+        <button id="run" class="btn primary" type="button" title="Compile and run">
+          <span aria-hidden="true">▶</span> Run <kbd id="run-key">Ctrl ↵</kbd>
+        </button>
+        <button id="stop" class="btn danger" type="button" hidden>
+          <span aria-hidden="true">■</span> Stop
+        </button>
+      </div>
+      <div class="editor-wrap" id="editor-wrap">
+        <textarea id="code" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Java source code"></textarea>
+      </div>
+      <ul class="problems" id="problems" hidden></ul>
+    </section>
+
+    <section class="pane out-pane" aria-label="Results">
+      <div class="pane-head tabs" role="tablist">
+        <button role="tab" class="tab active" type="button" data-tab="output" aria-selected="true">Output</button>
+        <button role="tab" class="tab" type="button" data-tab="input" aria-selected="false">Input<span class="dot" id="input-dot" hidden></span></button>
+        <button role="tab" class="tab" type="button" data-tab="bytecode" aria-selected="false">Bytecode</button>
+        <span class="spacer"></span>
+        <span class="run-state" id="run-state"></span>
+      </div>
+      <div class="tab-body" data-body="output" role="tabpanel">
+        <pre id="output" class="console" aria-live="polite"><span class="muted">Press Run to compile and execute the program.</span></pre>
+      </div>
+      <div class="tab-body" data-body="input" role="tabpanel" hidden>
+        <textarea id="stdin" class="stdin" spellcheck="false" placeholder="Text your program reads from System.in, e.g. with new Scanner(System.in)"></textarea>
+      </div>
+      <div class="tab-body" data-body="bytecode" role="tabpanel" hidden>
+        <pre id="bytecode" class="console bytecode"></pre>
+      </div>
+      <footer class="stats" id="stats"></footer>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/clike/clike.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/matchbrackets.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/closebrackets.min.js"></script>
+  <script src="examples.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
