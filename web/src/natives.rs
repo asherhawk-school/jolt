@@ -7,41 +7,110 @@ use crate::jfmt;
 use crate::regex::Regex;
 use crate::vm::*;
 
-pub type Nf = fn(&mut Vm, Vec<V>) -> R;
+pub type Nf = fn(&mut Vm, &[V]) -> R;
 
 // ---------------------------------------------------------------- helpers
 
 pub struct Scanner {
     pub buf: Vec<u16>,
     pub pos: usize,
+    /// No more input will ever arrive. Always true, except for System.in in
+    /// interactive mode, where the user may still type more.
+    pub eof: bool,
 }
+
+/// The answer depends on input that has not been typed yet.
+pub struct NeedMore;
 
 impl Scanner {
     pub fn new(s: &str) -> Scanner {
         Scanner {
             buf: s.encode_utf16().collect(),
             pos: 0,
+            eof: true,
         }
     }
     fn is_ws(c: u16) -> bool {
         matches!(c, 9..=13 | 28..=32) || c == 0x85 || c == 0xA0 || c == 0x2028 || c == 0x2029
     }
-    fn peek_token(&self) -> Option<(usize, usize)> {
+    fn skip_ws(&self) -> usize {
         let mut i = self.pos;
         while i < self.buf.len() && Self::is_ws(self.buf[i]) {
             i += 1;
         }
-        if i >= self.buf.len() {
-            return None;
+        i
+    }
+    /// The next complete token, or `None` when the input has ended.
+    fn token(&self, eof: bool) -> Result<Option<(usize, usize)>, NeedMore> {
+        let start = self.skip_ws();
+        if start >= self.buf.len() {
+            return if eof { Ok(None) } else { Err(NeedMore) };
         }
-        let start = i;
+        let mut i = start;
         while i < self.buf.len() && !Self::is_ws(self.buf[i]) {
             i += 1;
         }
-        Some((start, i))
+        if i == self.buf.len() && !eof {
+            return Err(NeedMore); // the token may continue
+        }
+        Ok(Some((start, i)))
     }
-    fn token_string(&self, (a, b): (usize, usize)) -> String {
+    fn has_token(&self, eof: bool) -> Result<bool, NeedMore> {
+        if self.skip_ws() < self.buf.len() {
+            Ok(true)
+        } else if eof {
+            Ok(false)
+        } else {
+            Err(NeedMore)
+        }
+    }
+    /// The current line: (end of its text, start of the next line).
+    fn line(&self, eof: bool) -> Result<Option<(usize, usize)>, NeedMore> {
+        let mut i = self.pos;
+        while i < self.buf.len() && self.buf[i] != 10 && self.buf[i] != 13 {
+            i += 1;
+        }
+        if i < self.buf.len() {
+            let mut next = i + 1;
+            if self.buf[i] == 13 && next < self.buf.len() && self.buf[next] == 10 {
+                next += 1;
+            }
+            return Ok(Some((i, next)));
+        }
+        if !eof {
+            return Err(NeedMore);
+        }
+        Ok((self.pos < self.buf.len()).then_some((i, i)))
+    }
+    fn has_line(&self, eof: bool) -> Result<bool, NeedMore> {
+        if self.pos < self.buf.len() {
+            Ok(true)
+        } else if eof {
+            Ok(false)
+        } else {
+            Err(NeedMore)
+        }
+    }
+    fn text(&self, a: usize, b: usize) -> String {
         String::from_utf16_lossy(&self.buf[a..b])
+    }
+}
+
+/// Ask the scanner a question. If the answer needs input that hasn't been typed
+/// yet, pause the program until it is (interactive mode), or else treat the
+/// input as finished, like a closed stdin.
+fn scan<T>(vm: &mut Vm, st: &Rc<RefCell<Scanner>>, f: impl Fn(&Scanner, bool) -> Result<T, NeedMore>) -> Result<T, Ex> {
+    vm.flush();
+    let eof = st.borrow().eof;
+    if let Ok(t) = f(&st.borrow(), eof) {
+        return Ok(t);
+    }
+    if vm.can_suspend() {
+        return Err(Ex::NeedInput);
+    }
+    match f(&st.borrow(), true) {
+        Ok(t) => Ok(t),
+        Err(NeedMore) => Err(Ex::Fatal("scanner needs input after end of input".into())),
     }
 }
 
@@ -406,7 +475,7 @@ fn compare_objects(vm: &mut Vm, a: &V, b: &V) -> Result<i32, Ex> {
         Target::Code(m) => vm.invoke(m, vec![a.clone(), b.clone()])?,
         Target::Native(n) => {
             let f = vm.natives[n].1;
-            f(vm, vec![a.clone(), b.clone()])?
+            f(vm, &[a.clone(), b.clone()])?
         }
         Target::Abstract => None,
     };
@@ -1401,14 +1470,22 @@ pub fn register(vm: &mut Vm) {
             Ok(None)
         },
         "java/io/InputStream.read()I" => |vm, _| {
-            vm.flush();
             let stdin = vm.stdin();
-            let mut st = stdin.borrow_mut();
-            if st.pos < st.buf.len() {
-                st.pos += 1;
-                ok_i((st.buf[st.pos - 1] & 0xff) as i32)
-            } else {
-                ok_i(-1)
+            let byte = scan(vm, &stdin, |s, eof| {
+                if s.pos < s.buf.len() {
+                    Ok(Some(s.buf[s.pos]))
+                } else if eof {
+                    Ok(None)
+                } else {
+                    Err(NeedMore)
+                }
+            })?;
+            match byte {
+                Some(b) => {
+                    stdin.borrow_mut().pos += 1;
+                    ok_i((b & 0xff) as i32)
+                }
+                None => ok_i(-1),
             }
         },
         "java/io/PrintStream.println()V" => |vm, a| { print_to(vm, &a[0], "\n")?; Ok(None) },
@@ -1480,7 +1557,7 @@ pub fn register(vm: &mut Vm) {
         "java/util/Scanner.<init>(Ljava/io/InputStream;)V" => |vm, a| { let st = vm.stdin(); set_data(&a[0], Data::Scanner(st)); Ok(None) },
         "java/util/Scanner.<init>(Ljava/lang/String;)V" => |vm, a| {
             let s = str_of(vm, &a[1])?;
-            set_data(&a[0], Data::Scanner(Rc::new(RefCell::new(Scanner { buf: s.to_vec(), pos: 0 }))));
+            set_data(&a[0], Data::Scanner(Rc::new(RefCell::new(Scanner { buf: s.to_vec(), pos: 0, eof: true }))));
             Ok(None)
         },
         "java/util/Scanner.next()Ljava/lang/String;" => |vm, a| { let t = scan_token(vm, &a[0])?; ret_rs(vm, &t) },
@@ -1490,37 +1567,24 @@ pub fn register(vm: &mut Vm) {
         "java/util/Scanner.nextBoolean()Z" => |vm, a| scan_parse(vm, &a[0], |t| match t.to_ascii_lowercase().as_str() { "true" => Some(V::I(1)), "false" => Some(V::I(0)), _ => None }),
         "java/util/Scanner.nextLine()Ljava/lang/String;" => |vm, a| {
             let st = scanner(&a[0]);
-            let line = {
-                let mut s = st.borrow_mut();
-                if s.pos >= s.buf.len() {
-                    None
-                } else {
-                    let start = s.pos;
-                    let mut i = start;
-                    while i < s.buf.len() && s.buf[i] != 10 && s.buf[i] != 13 {
-                        i += 1;
-                    }
-                    let line = s.buf[start..i].to_vec();
-                    if i < s.buf.len() && s.buf[i] == 13 {
-                        i += 1;
-                    }
-                    if i < s.buf.len() && s.buf[i] == 10 {
-                        i += 1;
-                    }
-                    s.pos = i;
-                    Some(line)
+            match scan(vm, &st, |s, eof| s.line(eof))? {
+                Some((end, next)) => {
+                    let line = {
+                        let mut s = st.borrow_mut();
+                        let l = s.buf[s.pos..end].to_vec();
+                        s.pos = next;
+                        l
+                    };
+                    ret_s(vm, line)
                 }
-            };
-            match line {
-                Some(l) => ret_s(vm, l),
                 None => Err(vm.throw("java/util/NoSuchElementException", Some("No line found"))),
             }
         },
-        "java/util/Scanner.hasNext()Z" => |_, a| ok_z(scanner(&a[0]).borrow().peek_token().is_some()),
-        "java/util/Scanner.hasNextInt()Z" => |_, a| { let st = scanner(&a[0]); let s = st.borrow(); ok_z(s.peek_token().map_or(false, |t| s.token_string(t).parse::<i32>().is_ok())) },
-        "java/util/Scanner.hasNextLong()Z" => |_, a| { let st = scanner(&a[0]); let s = st.borrow(); ok_z(s.peek_token().map_or(false, |t| s.token_string(t).parse::<i64>().is_ok())) },
-        "java/util/Scanner.hasNextDouble()Z" => |_, a| { let st = scanner(&a[0]); let s = st.borrow(); ok_z(s.peek_token().map_or(false, |t| s.token_string(t).parse::<f64>().is_ok())) },
-        "java/util/Scanner.hasNextLine()Z" => |_, a| { let st = scanner(&a[0]); let s = st.borrow(); ok_z(s.pos < s.buf.len()) },
+        "java/util/Scanner.hasNext()Z" => |vm, a| { let st = scanner(&a[0]); ok_z(scan(vm, &st, |s, eof| s.has_token(eof))?) },
+        "java/util/Scanner.hasNextInt()Z" => |vm, a| scan_has(vm, &a[0], |t| t.parse::<i32>().is_ok()),
+        "java/util/Scanner.hasNextLong()Z" => |vm, a| scan_has(vm, &a[0], |t| t.parse::<i64>().is_ok()),
+        "java/util/Scanner.hasNextDouble()Z" => |vm, a| scan_has(vm, &a[0], |t| t.parse::<f64>().is_ok()),
+        "java/util/Scanner.hasNextLine()Z" => |vm, a| { let st = scanner(&a[0]); ok_z(scan(vm, &st, |s, eof| s.has_line(eof))?) },
         "java/util/Scanner.close()V" => |_, _| Ok(None),
 
         // ---- Random
@@ -1732,7 +1796,7 @@ fn set_throwable(v: &V, idx: usize, val: V) {
     }
 }
 
-fn printf(vm: &mut Vm, a: Vec<V>) -> R {
+fn printf(vm: &mut Vm, a: &[V]) -> R {
     let f = str_of(vm, &a[1])?;
     let args = match &a[2] {
         V::R(o) => match &*o.data.borrow() {
@@ -1757,42 +1821,40 @@ fn scanner(v: &V) -> Rc<RefCell<Scanner>> {
 }
 
 fn scan_token(vm: &mut Vm, v: &V) -> Result<String, Ex> {
-    vm.flush();
     let st = scanner(v);
-    let tok = {
-        let mut s = st.borrow_mut();
-        s.peek_token().map(|t| {
-            s.pos = t.1;
-            s.token_string(t)
-        })
-    };
-    tok.ok_or_else(|| vm.throw("java/util/NoSuchElementException", None))
+    match scan(vm, &st, |s, eof| s.token(eof))? {
+        Some((a, b)) => {
+            let t = st.borrow().text(a, b);
+            st.borrow_mut().pos = b;
+            Ok(t)
+        }
+        None => Err(vm.throw("java/util/NoSuchElementException", None)),
+    }
 }
 
 fn scan_parse(vm: &mut Vm, v: &V, parse: impl Fn(&str) -> Option<V>) -> R {
-    vm.flush();
     let st = scanner(v);
-    let res = {
-        let mut s = st.borrow_mut();
-        match s.peek_token() {
-            None => Err(false),
-            Some(t) => {
-                let text = s.token_string(t);
-                match parse(&text) {
-                    Some(val) => {
-                        s.pos = t.1;
-                        Ok(val)
-                    }
-                    None => Err(true),
+    match scan(vm, &st, |s, eof| s.token(eof))? {
+        None => Err(vm.throw("java/util/NoSuchElementException", None)),
+        Some((a, b)) => {
+            let text = st.borrow().text(a, b);
+            match parse(&text) {
+                Some(val) => {
+                    st.borrow_mut().pos = b;
+                    Ok(Some(val))
                 }
+                // Like Java, the offending token is left in place.
+                None => Err(vm.throw("java/util/InputMismatchException", None)),
             }
         }
-    };
-    match res {
-        Ok(v) => Ok(Some(v)),
-        Err(true) => Err(vm.throw("java/util/InputMismatchException", None)),
-        Err(false) => Err(vm.throw("java/util/NoSuchElementException", None)),
     }
+}
+
+fn scan_has(vm: &mut Vm, v: &V, ok: impl Fn(&str) -> bool) -> R {
+    let st = scanner(v);
+    let tok = scan(vm, &st, |s, eof| s.token(eof))?;
+    let yes = tok.map_or(false, |(a, b)| ok(&st.borrow().text(a, b)));
+    ok_z(yes)
 }
 
 fn arraycopy(vm: &mut Vm, a: &[V]) -> R {

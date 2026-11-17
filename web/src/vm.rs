@@ -94,6 +94,8 @@ pub enum Ex {
     Throw(Ref),
     Exit(i32),
     Fatal(String),
+    /// The program is waiting for input that has not been typed yet.
+    NeedInput,
 }
 
 pub type R = Result<Option<V>, Ex>;
@@ -470,7 +472,17 @@ pub struct Vm {
     pub boxed_cache: FxMap<(u8, i32), Ref>,
     pub steps: u64,
     pub max_frames: usize,
+    /// Pause (instead of hitting end-of-input) when System.in runs dry.
+    interactive: bool,
+    main_started: bool,
+    run_depth: usize,
     last_flush: f64,
+}
+
+pub enum RunOutcome {
+    Exited(i32),
+    /// Paused: waiting for more input (interactive mode only).
+    NeedInput,
 }
 
 enum Flow {
@@ -501,10 +513,37 @@ impl Vm {
             boxed_cache: FxMap::default(),
             steps: 0,
             max_frames: 3000,
+            interactive: false,
+            main_started: false,
+            run_depth: 0,
             last_flush: 0.0,
         };
         crate::natives::register(&mut vm);
         vm
+    }
+
+    /// Interactive mode: when the program needs more input than it has, it
+    /// pauses (`RunOutcome::NeedInput`) until `feed_input` or `end_input`.
+    pub fn set_interactive(&mut self) {
+        self.interactive = true;
+        self.stdin_loaded = true;
+        self.stdin.borrow_mut().eof = false;
+    }
+
+    pub fn feed_input(&mut self, text: &str) {
+        self.stdin_loaded = true;
+        self.stdin.borrow_mut().buf.extend(text.encode_utf16());
+    }
+
+    pub fn end_input(&mut self) {
+        self.stdin_loaded = true;
+        self.stdin.borrow_mut().eof = true;
+    }
+
+    /// Only the outermost interpreter loop running `main` can pause: nested
+    /// runs (static initializers, callbacks from natives) live on the Rust stack.
+    pub fn can_suspend(&self) -> bool {
+        self.interactive && self.main_started && self.run_depth == 1
     }
 
     pub fn stdin(&mut self) -> Rc<RefCell<crate::natives::Scanner>> {
@@ -978,7 +1017,7 @@ impl Vm {
             Target::Native(n) => {
                 args.insert(0, recv);
                 let f = self.natives[n].1;
-                f(self, args)
+                f(self, &args)
             }
             Target::Abstract => Err(self.throw(
                 "java/lang/AbstractMethodError",
@@ -1005,6 +1044,43 @@ impl Vm {
     }
 
     fn run(&mut self, base: usize) -> R {
+        self.run_depth += 1;
+        let r = self.run_loop(base);
+        self.run_depth -= 1;
+        r
+    }
+
+    /// Call a native from the interpreter. If it pauses for input, the call is
+    /// rolled back so that resuming re-executes the same instruction.
+    fn call_native(&mut self, f: &mut Frame, ni: usize, nargs: usize) -> Result<(), Ex> {
+        let args = f.stack.split_off(f.stack.len() - nargs);
+        let func = self.natives[ni].1;
+        // A stand-in frame so stack traces from inside the native include this method.
+        self.frames.push(Frame {
+            m: f.m.clone(),
+            pc: 0,
+            cur: f.cur,
+            locals: vec![],
+            stack: vec![],
+        });
+        let r = func(self, &args);
+        self.frames.pop();
+        match r {
+            Ok(Some(v)) => {
+                f.stack.push(v);
+                Ok(())
+            }
+            Ok(None) => Ok(()),
+            Err(Ex::NeedInput) => {
+                f.stack.extend(args);
+                f.pc = f.cur;
+                Err(Ex::NeedInput)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn run_loop(&mut self, base: usize) -> R {
         loop {
             let mut f = self.frames.pop().unwrap();
             match self.exec(&mut f) {
@@ -1031,6 +1107,11 @@ impl Vm {
                 Err(Ex::Throw(e)) => {
                     self.frames.push(f);
                     self.unwind(e, base)?;
+                }
+                Err(Ex::NeedInput) => {
+                    // Keep every frame: `resume` continues from right here.
+                    self.frames.push(f);
+                    return Err(Ex::NeedInput);
                 }
                 Err(other) => {
                     self.frames.truncate(base);
@@ -1913,24 +1994,7 @@ impl Vm {
                             let args = f.stack.split_off(n - nargs);
                             return Ok(Flow::Call(self.make_frame(callee, args)));
                         }
-                        Target::Native(ni) => {
-                            let args = f.stack.split_off(n - nargs);
-                            let func = self.natives[ni].1;
-                            let saved = std::mem::replace(&mut f.pc, f.cur);
-                            self.frames.push(Frame {
-                                m: f.m.clone(),
-                                pc: 0,
-                                cur: f.cur,
-                                locals: vec![],
-                                stack: vec![],
-                            });
-                            let r = func(self, args);
-                            self.frames.pop();
-                            f.pc = saved;
-                            if let Some(v) = r? {
-                                push!(v);
-                            }
-                        }
+                        Target::Native(ni) => self.call_native(f, ni, nargs)?,
                         Target::Abstract => {
                             let msg = format!("{}.{}{}", self.class_name(o), name, desc);
                             throw!("java/lang/AbstractMethodError", Some(&msg));
@@ -1960,24 +2024,7 @@ impl Vm {
                             let args = f.stack.split_off(n - nargs);
                             return Ok(Flow::Call(self.make_frame(callee, args)));
                         }
-                        Target::Native(ni) => {
-                            let args = f.stack.split_off(n - nargs);
-                            let func = self.natives[ni].1;
-                            let saved = std::mem::replace(&mut f.pc, f.cur);
-                            self.frames.push(Frame {
-                                m: f.m.clone(),
-                                pc: 0,
-                                cur: f.cur,
-                                locals: vec![],
-                                stack: vec![],
-                            });
-                            let r = func(self, args);
-                            self.frames.pop();
-                            f.pc = saved;
-                            if let Some(v) = r? {
-                                push!(v);
-                            }
-                        }
+                        Target::Native(ni) => self.call_native(f, ni, nargs)?,
                         Target::Abstract => return Err(Ex::Fatal("abstract method".into())),
                     }
                 }
@@ -2135,12 +2182,27 @@ impl Vm {
         }
     }
 
-    // ---------- entry point ----------
-    /// Run `main_class.main(args)`. Returns the process exit code.
-    pub fn run_main(&mut self, main_class: &str, args: &[String]) -> i32 {
+    // ---------- entry points ----------
+    /// Start `main_class.main(args)`.
+    pub fn start_main(&mut self, main_class: &str, args: &[String]) -> RunOutcome {
         let internal = main_class.replace('.', "/");
-        let code = match self.run_main_inner(&internal, args) {
+        let r = self.run_main_inner(&internal, args);
+        self.finish(r)
+    }
+
+    /// Continue a program that paused for input.
+    pub fn resume(&mut self) -> RunOutcome {
+        let r = self.run(0).map(|_| ());
+        self.finish(r)
+    }
+
+    fn finish(&mut self, r: Result<(), Ex>) -> RunOutcome {
+        let code = match r {
             Ok(()) => 0,
+            Err(Ex::NeedInput) => {
+                self.flush();
+                return RunOutcome::NeedInput;
+            }
             Err(Ex::Exit(c)) => c,
             Err(Ex::Throw(e)) => {
                 let text = self.describe_uncaught(&e);
@@ -2152,8 +2214,9 @@ impl Vm {
                 1
             }
         };
+        self.frames.clear();
         self.flush();
-        code
+        RunOutcome::Exited(code)
     }
 
     fn run_main_inner(&mut self, internal: &str, args: &[String]) -> Result<(), Ex> {
@@ -2170,6 +2233,7 @@ impl Vm {
         if let V::R(r) = &arr {
             *r.data.borrow_mut() = Data::ArrA(vals);
         }
+        self.main_started = true;
         self.invoke(m, vec![arr])?;
         Ok(())
     }

@@ -297,10 +297,76 @@ function run() {
   output.innerHTML = "";
   showTab("output");
   setRunning(true);
-  runWorker.postMessage({ id: runId, source, stdin: stdinBox.value, run: true, disasm: false });
+  // Text in the Input tab is the whole input (like piping a file in). With the
+  // Input tab empty, the program asks for input in the console, like a terminal.
+  let stdin = stdinBox.value;
+  const interactive = stdin === "";
+  if (stdin && !stdin.endsWith("\n")) stdin += "\n";
+  runWorker.postMessage({ type: "run", id: runId, source, stdin, interactive, run: true, disasm: false });
+}
+
+// ---- typing input into a waiting program
+
+let prompt = null;
+
+function showPrompt() {
+  removePrompt();
+  clearInterval(runTicker);
+  const rs = $("run-state");
+  rs.className = "run-state waiting";
+  rs.textContent = "waiting for input";
+  const line = document.createElement("span");
+  line.className = "prompt-line";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "stdin-input";
+  input.setAttribute("aria-label", "Program input");
+  input.placeholder = "type input, press Enter";
+  input.spellcheck = false;
+  input.autocomplete = "off";
+  input.autocapitalize = "off";
+  const end = document.createElement("button");
+  end.type = "button";
+  end.className = "end-input";
+  end.textContent = "End input";
+  end.title = "Signal end of input (Ctrl+D)";
+  end.addEventListener("click", () => sendInput(null, "^D\n"));
+  line.appendChild(input);
+  line.appendChild(end);
+  output.appendChild(line);
+  prompt = { line, input, id: runId };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      sendInput(input.value + "\n", input.value + "\n");
+    } else if ((e.key === "d" || e.key === "D") && e.ctrlKey) {
+      e.preventDefault();
+      sendInput(null, "^D\n");
+    }
+  });
+  output.scrollTop = output.scrollHeight;
+  input.focus({ preventScroll: true });
+}
+
+function removePrompt() {
+  if (prompt) {
+    prompt.line.remove();
+    prompt = null;
+  }
+}
+
+// `text` null means end of input.
+function sendInput(text, echo) {
+  if (!prompt) return;
+  const id = prompt.id;
+  removePrompt();
+  append(echo, text === null ? "muted" : "echo");
+  setRunning(true);
+  runWorker.postMessage(text === null ? { type: "eof", id } : { type: "input", id, text });
 }
 
 function stop(silent) {
+  removePrompt();
   runWorker.terminate();
   runWorker = makeWorker(onRun);
   runId++;
@@ -322,7 +388,11 @@ function onRun(msg) {
       renderStats();
       break;
     }
+    case "waiting":
+      showPrompt();
+      break;
     case "done": {
+      removePrompt();
       setRunning(false);
       if (msg.diag) {
         append(msg.diag, "err");
@@ -348,6 +418,7 @@ function onRun(msg) {
 output.addEventListener("click", (e) => {
   const a = e.target.closest("a.loc");
   if (a) editor.jump(+a.dataset.line, +a.dataset.col);
+  else if (prompt && !window.getSelection().toString()) prompt.input.focus();
 });
 
 // ---------------------------------------------------------------- examples, persistence, sharing
@@ -440,7 +511,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
     e.preventDefault();
     run();
-  } else if (e.key === "Escape" && running) {
+  } else if (e.key === "Escape" && (running || prompt)) {
     stop(false);
   }
 });

@@ -223,6 +223,11 @@ kbd {
   background: var(--accent-strong); margin-right: 6px; animation: pulse 1s infinite;
 }
 @keyframes pulse { 50% { opacity: 0.25; } }
+.run-state.waiting { color: var(--accent-strong); font-weight: 600; }
+.run-state.waiting::before {
+  content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  border: 1.5px solid var(--accent-strong); margin-right: 6px; vertical-align: 0;
+}
 
 .tab-body { flex: 1; min-height: 0; display: flex; }
 .tab-body[hidden] { display: none; }
@@ -233,6 +238,22 @@ kbd {
   white-space: pre;
 }
 .console .err { color: var(--danger); }
+.console .echo { color: var(--tok-def); }
+.prompt-line { display: inline-flex; min-width: 50%; }
+.stdin-input {
+  flex: 1; min-width: 24ch;
+  font: inherit; color: var(--tok-def);
+  background: transparent; border: 0; outline: none; padding: 0; margin: 0;
+  caret-color: var(--accent-strong);
+  border-bottom: 1px dashed var(--border);
+}
+.stdin-input::placeholder { color: var(--muted); opacity: 0.8; }
+.end-input {
+  font: 600 11px var(--sans); color: var(--muted);
+  background: transparent; border: 1px solid var(--border); border-radius: 6px;
+  padding: 1px 7px; margin-left: 10px; cursor: pointer;
+}
+.end-input:hover { color: var(--text); background: var(--panel-2); }
 .console .muted { color: var(--muted); }
 .console .ok { color: var(--ok); }
 .console a.loc { color: inherit; text-decoration: underline dotted; cursor: pointer; }

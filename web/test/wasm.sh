@@ -21,6 +21,13 @@ for src in tests/programs/*.java; do
   else
     echo "FAIL wasm/$name"; head -30 "$work/$name.diff"; fail=$((fail+1))
   fi
+  # Typing the same input line by line, as in the playground console, must give the same result.
+  INTERACTIVE=1 node web/test/node-smoke.mjs "$WASM" "$src" $([ "$input" != /dev/null ] && echo "$input") >"$work/$name.inter" 2>&1
+  if diff -u "$work/$name.expected" "$work/$name.inter" >"$work/$name.idiff"; then
+    echo "ok   wasm-interactive/$name"; pass=$((pass+1))
+  else
+    echo "FAIL wasm-interactive/$name"; head -30 "$work/$name.idiff"; fail=$((fail+1))
+  fi
 done
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

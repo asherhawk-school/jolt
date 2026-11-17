@@ -11,8 +11,10 @@ modern Java runtime, and it does so **25–100× faster than `javac`**.
 The [playground](https://asherhawk-school.github.io/jolt/) compiles and runs Java
 entirely on your device, with no server involved. The jolt compiler and **jolt-vm**, a
 tiny JVM written for this project, are both compiled to WebAssembly. You get errors
-as you type, live program output, a `javap`-style bytecode view, stdin for `Scanner`
-programs, and shareable links.
+as you type, live program output, a `javap`-style bytecode view, and shareable links.
+When a program reads input (`Scanner`, `System.in`), it pauses and you type your answer
+into the console, just like a terminal. Alternatively, put the whole input in the Input
+tab up front.
 
 ```console
 $ jolt run Hello.java
@@ -66,7 +68,9 @@ jolt knows about is implemented natively, including `String`, `StringBuilder`,
 `Math`, `Arrays`, `Scanner`, `Random` (bit-for-bit Java's algorithm), `String.format`/`printf`
 (with Java's HALF_UP rounding), `Double.toString` (Java's digit rules), regex-based
 `split`/`replaceAll`/`matches`, exceptions with real stack traces, and class initialization
-order. The test suite checks that jolt-vm's output is **identical to the real JVM's**
+order. A program waiting for input pauses mid-run and resumes exactly where it left
+off. That's possible because jolt-vm keeps the Java call stack on the heap instead of
+the native stack. The test suite checks that jolt-vm's output is **identical to the real JVM's**
 for every test program, both natively and in the WebAssembly build.
 
 | | |
